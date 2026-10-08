@@ -1,0 +1,155 @@
+# Shell scripts mounted at /scripts in every job pod
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-backup-scripts
+  namespace: pg-backup
+data:
+  # Shared helpers: Slack message and healthcheck ping
+  notify.sh: |
+    notify_slack() {
+      [ -z "${SLACK_WEBHOOK_URL:-}" ] && return 0
+      MSG=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+      curl -sS -m 10 -X POST -H 'Content-Type: application/json' \
+        -d "{\"text\": \"$MSG\"}" "$SLACK_WEBHOOK_URL" >/dev/null || true
+    }
+    ping_healthcheck() {
+      # $1 = url, $2 = ok | fail
+      [ -z "${1:-}" ] && return 0
+      if [ "$2" = "ok" ]; then URL="$1"; else URL="$1/fail"; fi
+      curl -sS -m 10 "$URL" >/dev/null || true
+    }
+
+  # Backup step 1 (postgres image): pg_dump into /work, always exits 0 so step 2 can report
+  backup-dump.sh: |
+    #!/bin/sh
+    set -u
+    FILE="/work/${PGDATABASE}-$(date -u +%Y-%m-%dT%H%M%SZ).dump"
+    echo "Dumping $PGDATABASE from $PGHOST..."
+    if pg_dump -Fc -f "$FILE" "$PGDATABASE" 2>/work/error.log; then
+      echo "$FILE" > /work/dumpfile
+      echo ok > /work/status
+      echo "Dump OK: $(du -h "$FILE" | cut -f1)"
+    else
+      echo ko > /work/status
+      cat /work/error.log
+    fi
+    exit 0
+
+  # Backup step 2 (aws-cli image): upload, retention, notification
+  backup-upload.sh: |
+    #!/bin/sh
+    set -u
+    . /scripts/notify.sh
+
+    fail() {
+      echo "FAILED: $1"
+      notify_slack "❌ Backup $PGDATABASE failed: $1"
+      ping_healthcheck "${HEALTHCHECK_URL_BACKUP:-}" fail
+      exit 1
+    }
+
+    [ "$(cat /work/status 2>/dev/null)" = "ok" ] \
+      || fail "pg_dump error: $(tail -n 3 /work/error.log 2>/dev/null)"
+
+    FILE=$(cat /work/dumpfile)
+    KEY="${S3_PREFIX}$(basename "$FILE")"
+    SIZE=$(du -h "$FILE" | cut -f1)
+
+    echo "Uploading to s3://$S3_BUCKET/$KEY ($SIZE)..."
+    aws s3 cp "$FILE" "s3://$S3_BUCKET/$KEY" --only-show-errors \
+      || fail "S3 upload error"
+
+    # Keep only the $RETENTION most recent dumps
+    KEYS=$(aws s3api list-objects-v2 --bucket "$S3_BUCKET" \
+      --prefix "${S3_PREFIX}${PGDATABASE}-" \
+      --query 'sort_by(Contents,&LastModified)[].Key' --output text)
+    [ "$KEYS" = "None" ] && KEYS=""
+    COUNT=$(echo $KEYS | wc -w)
+    TO_DELETE=$((COUNT - RETENTION))
+    if [ "$TO_DELETE" -gt 0 ]; then
+      for K in $(echo $KEYS | tr ' ' '\n' | head -n "$TO_DELETE"); do
+        echo "Retention: deleting $K"
+        aws s3 rm "s3://$S3_BUCKET/$K" --only-show-errors
+      done
+    fi
+
+    echo "Backup OK ✅"
+    [ "${NOTIFY_ON_SUCCESS:-false}" = "true" ] && notify_slack "✅ Backup $PGDATABASE OK ($SIZE)"
+    ping_healthcheck "${HEALTHCHECK_URL_BACKUP:-}" ok
+    exit 0
+
+  # Restore step 1 (aws-cli image): download the latest dump
+  restore-download.sh: |
+    #!/bin/sh
+    set -u
+    KEY=$(aws s3api list-objects-v2 --bucket "$S3_BUCKET" \
+      --prefix "${S3_PREFIX}${PGDATABASE}-" \
+      --query 'sort_by(Contents,&LastModified)[-1].Key' --output text 2>/work/error.log)
+    if [ -z "$KEY" ] || [ "$KEY" = "None" ]; then
+      echo "no dump found in s3://$S3_BUCKET/$S3_PREFIX" >> /work/error.log
+      echo ko > /work/status
+      exit 0
+    fi
+    echo "Downloading $KEY..."
+    if aws s3 cp "s3://$S3_BUCKET/$KEY" /work/latest.dump --only-show-errors 2>>/work/error.log; then
+      echo "$KEY" > /work/dumpkey
+      echo ok > /work/status
+    else
+      echo ko > /work/status
+    fi
+    exit 0
+
+  # Restore step 2 (postgres image, runs as postgres user): throwaway Postgres, restore, check
+  restore-check.sh: |
+    #!/bin/sh
+    set -u
+    [ "$(cat /work/status 2>/dev/null)" = "ok" ] || exit 0
+
+    ko() { echo "$1" >> /work/error.log; echo ko > /work/status; exit 0; }
+
+    # Start an empty Postgres local to the pod, unix socket only
+    export PGDATA=/pgdata/data
+    initdb -U postgres >/dev/null || ko "initdb failed"
+    pg_ctl -o "-c listen_addresses='' -k /tmp" -w start >/dev/null || ko "throwaway Postgres did not start"
+    export PGHOST=/tmp PGUSER=postgres
+
+    # Restore the dump into it
+    createdb "$PGDATABASE" || ko "createdb failed"
+    echo "Restoring $(cat /work/dumpkey)..."
+    START=$(date +%s)
+    pg_restore --no-owner --no-privileges -d "$PGDATABASE" /work/latest.dump 2>>/work/error.log \
+      || ko "pg_restore failed"
+    echo $(( $(date +%s) - START )) > /work/duration
+
+    # Run the check query
+    RESULT=$(psql -d "$PGDATABASE" -tAc "$CHECK_QUERY" 2>>/work/error.log) \
+      || ko "check query errored"
+    echo "$CHECK_QUERY -> $RESULT"
+    if [ "$RESULT" -gt 0 ] 2>/dev/null; then
+      echo "$RESULT" > /work/result
+      echo ok > /work/status
+    else
+      ko "check query returned '$RESULT' (expected > 0)"
+    fi
+    pg_ctl -m fast stop >/dev/null
+    exit 0
+
+  # Restore step 3 (aws-cli image, ships curl): verdict and notification
+  restore-report.sh: |
+    #!/bin/sh
+    set -u
+    . /scripts/notify.sh
+    if [ "$(cat /work/status 2>/dev/null)" = "ok" ]; then
+      MSG="✅ Restore test $PGDATABASE OK: $(cat /work/dumpkey), $(cat /work/result) rows, restored in $(cat /work/duration)s"
+      echo "$MSG"
+      [ "${NOTIFY_ON_SUCCESS:-false}" = "true" ] && notify_slack "$MSG"
+      ping_healthcheck "${HEALTHCHECK_URL_RESTORE:-}" ok
+      exit 0
+    else
+      ERR=$(tail -n 3 /work/error.log 2>/dev/null)
+      echo "FAILED: $ERR"
+      notify_slack "❌ Restore test $PGDATABASE failed: $ERR"
+      ping_healthcheck "${HEALTHCHECK_URL_RESTORE:-}" fail
+      exit 1
+    fi

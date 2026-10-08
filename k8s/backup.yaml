@@ -1,0 +1,59 @@
+# Nightly backup: pg_dump, upload to S3, apply retention, notify
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup
+  namespace: pg-backup
+spec:
+  schedule: "0 2 * * *"
+  timeZone: Europe/Paris
+  concurrencyPolicy: Forbid          # never two backups at once
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0                # no retry, failures are notified instead
+      activeDeadlineSeconds: 3600    # kill the job after 1h
+      ttlSecondsAfterFinished: 86400 # clean up finished jobs after 24h
+      template:
+        spec:
+          restartPolicy: Never
+          volumes:
+            - name: work
+              emptyDir:
+                sizeLimit: 10Gi      # max dump size
+            - name: scripts
+              configMap:
+                name: pg-backup-scripts
+                defaultMode: 0755
+
+          # Step 1: dump the database
+          initContainers:
+            - name: dump
+              image: postgres:17-alpine
+              command: ["/bin/sh", "/scripts/backup-dump.sh"]
+              envFrom:
+                - configMapRef: { name: pg-backup-config }
+                - secretRef:    { name: postgres-credentials }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: scripts, mountPath: /scripts }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits:   { memory: 512Mi }
+
+          # Step 2: upload, retention, notification
+          containers:
+            - name: upload
+              image: amazon/aws-cli:latest
+              command: ["/bin/sh", "/scripts/backup-upload.sh"]
+              envFrom:
+                - configMapRef: { name: pg-backup-config }
+                - secretRef:    { name: s3-backup-credentials }
+                - secretRef:    { name: notifications }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: scripts, mountPath: /scripts }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits:   { memory: 512Mi }

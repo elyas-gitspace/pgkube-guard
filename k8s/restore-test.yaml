@@ -1,0 +1,79 @@
+# Nightly restore test: fetch latest dump, restore into a throwaway Postgres, run the check query
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-restore-test
+  namespace: pg-backup
+spec:
+  schedule: "0 4 * * *"
+  timeZone: Europe/Paris
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: Never
+          # No postgres-credentials here on purpose: this pod can never reach production
+          volumes:
+            - name: work
+              emptyDir:
+                sizeLimit: 10Gi
+            - name: pgdata           # disk of the throwaway Postgres
+              emptyDir:
+                sizeLimit: 20Gi
+            - name: scripts
+              configMap:
+                name: pg-backup-scripts
+                defaultMode: 0755
+
+          initContainers:
+            # Step 1: download the latest dump (read-only S3 credentials)
+            - name: download
+              image: amazon/aws-cli:latest
+              command: ["/bin/sh", "/scripts/restore-download.sh"]
+              envFrom:
+                - configMapRef: { name: pg-backup-config }
+                - secretRef:    { name: s3-restore-credentials }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: scripts, mountPath: /scripts }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits:   { memory: 512Mi }
+
+            # Step 2: throwaway Postgres, restore, check query
+            - name: restore-check
+              image: postgres:17-alpine
+              command: ["/bin/sh", "/scripts/restore-check.sh"]
+              securityContext:
+                runAsUser: 70        # "postgres" user of the alpine image
+                runAsGroup: 70
+              envFrom:
+                - configMapRef: { name: pg-backup-config }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: pgdata, mountPath: /pgdata }
+                - { name: scripts, mountPath: /scripts }
+              resources:
+                requests: { cpu: 250m, memory: 256Mi }
+                limits:   { memory: 1Gi }
+
+          # Step 3: verdict and notification
+          containers:
+            - name: report
+              image: amazon/aws-cli:latest
+              command: ["/bin/sh", "/scripts/restore-report.sh"]
+              envFrom:
+                - configMapRef: { name: pg-backup-config }
+                - secretRef:    { name: notifications }
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: scripts, mountPath: /scripts }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits:   { memory: 128Mi }
