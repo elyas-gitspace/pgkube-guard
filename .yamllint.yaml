@@ -1,0 +1,15 @@
+# yamllint rules for Kubernetes manifests
+extends: default
+
+rules:
+  line-length:
+    max: 160
+  document-start: disable                # no mandatory leading ---
+  truthy:
+    check-keys: false                    # allow "on:" in GitHub workflows
+  braces:
+    max-spaces-inside: 1                 # allow { name: foo }
+  colons:
+    max-spaces-after: -1                 # allow aligned values
+  comments:
+    min-spaces-from-content: 1
