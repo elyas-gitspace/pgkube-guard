@@ -1,3 +1,6 @@
 # Real credentials, never commit them
 secrets.yaml
 *.secret.yaml
+
+# Local test database, personal use only
+examples/test-postgres/
