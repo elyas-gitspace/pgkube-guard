@@ -9,7 +9,7 @@ data:
   PGHOST: postgres.my-app.svc.cluster.local
   PGPORT: "5432"
   PGDATABASE: mydb
-  PGSSLMODE: prefer                           # use "require" for RDS
+  PGSSLMODE: require                           # use "prefer" for a pg source hosted on your cluster
 
   # Storage
   S3_BUCKET: my-backups

@@ -27,7 +27,7 @@ spec:
                 name: pg-backup-scripts
                 defaultMode: 0755
 
-          # Step 1: dump the database
+          # Step 1: dump the database (call the script backup-dump.sh)
           initContainers:
             - name: dump
               image: postgres:17-alpine
@@ -42,7 +42,7 @@ spec:
                 requests: { cpu: 100m, memory: 128Mi }
                 limits:   { memory: 512Mi }
 
-          # Step 2: upload, retention, notification
+          # Step 2: upload, retention, notification (call the script backup-upload.sh)
           containers:
             - name: upload
               image: amazon/aws-cli:latest
