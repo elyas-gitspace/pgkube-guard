@@ -1,4 +1,4 @@
-# Lint and validate Kubernetes manifests on every push and pull request
+# Lint and validate the Helm chart on every push and pull request
 name: lint
 
 on:
@@ -17,22 +17,25 @@ jobs:
           pip install --quiet yamllint
           yamllint --strict .
 
-  kubeconform:
-    name: Kubernetes schema validation
+  helm:
+    name: Helm lint and schema validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
       - name: Install kubeconform
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
           sudo mv kubeconform /usr/local/bin/
-      - name: Validate manifests
-        run: kubeconform -strict -summary -kubernetes-version 1.31.0 -skip Kustomization k8s/ examples/
 
-  kustomize:
-    name: Kustomize build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Render manifests
-        run: kubectl kustomize k8s/ > /dev/null
+      - name: Helm lint
+        run: helm lint charts/pgkube-guard -f charts/pgkube-guard/ci/default-values.yaml --strict
+
+      - name: Render and validate manifests
+        run: |
+          helm template my-backup charts/pgkube-guard -f charts/pgkube-guard/ci/default-values.yaml \
+            | kubeconform -strict -summary -kubernetes-version 1.31.0

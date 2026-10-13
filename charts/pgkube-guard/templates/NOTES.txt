@@ -1,0 +1,16 @@
+pgkube-guard is installed in namespace {{ .Release.Namespace }}.
+
+Backup:       {{ .Values.backup.schedule }} ({{ .Values.backup.timeZone }}) -> s3://{{ .Values.storage.s3.bucket }}/{{ .Values.storage.s3.prefix }}
+{{- if .Values.restoreTest.enabled }}
+Restore test: {{ .Values.restoreTest.schedule }} ({{ .Values.restoreTest.timeZone }})
+{{- end }}
+
+Run a backup now:
+  kubectl create job --from=cronjob/{{ include "pgkube-guard.fullname" . }}-backup manual-backup -n {{ .Release.Namespace }}
+  kubectl logs -n {{ .Release.Namespace }} job/manual-backup --all-containers -f
+{{- if .Values.restoreTest.enabled }}
+
+Run a restore test now:
+  kubectl create job --from=cronjob/{{ include "pgkube-guard.fullname" . }}-restore-test manual-restore -n {{ .Release.Namespace }}
+  kubectl logs -n {{ .Release.Namespace }} job/manual-restore --all-containers -f
+{{- end }}

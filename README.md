@@ -4,16 +4,16 @@ Automated PostgreSQL backups on Kubernetes, with nightly restore tests to prove 
 
 ## How it works
 
-| CronJob | When | What it does |
+| CronJob | Default schedule | What it does |
 |---|---|---|
-| `pg-backup` | 02:00 | `pg_dump` your database, upload it to S3, keep the last N dumps, notify on failure |
-| `pg-restore-test` | 04:00 | download the latest dump, restore it into a throwaway Postgres inside the pod, run a check query, notify on failure |
+| `backup` | 02:00 | `pg_dump` your database, upload it to S3, keep the last N dumps, notify on failure |
+| `restore-test` | 04:00 | download the latest dump, restore it into a throwaway Postgres inside the pod, run a check query, notify on failure |
 
 The restore test never receives your database credentials: it cannot touch production.
 
 ## Requirements
 
-- Kubernetes 1.27+
+- Kubernetes 1.27+ and Helm 3
 - A Postgres reachable from the cluster (in-cluster, RDS, Cloud SQL, VM...)
 - An S3-compatible bucket (AWS S3, MinIO...)
 - A read-only Postgres user, e.g. `GRANT pg_read_all_data TO backup_user;`
@@ -21,40 +21,49 @@ The restore test never receives your database credentials: it cannot touch produ
 ## Quick start
 
 ```bash
-# 1. Fill in your credentials (gitignored)
-cp examples/secrets.example.yaml secrets.yaml
+# 1. Create your credentials
+kubectl create namespace pgkube-guard
+kubectl create secret generic postgres-credentials -n pgkube-guard \
+  --from-literal=username=backup_user --from-literal=password='...'
+kubectl create secret generic s3-backup-credentials -n pgkube-guard \
+  --from-literal=AWS_ACCESS_KEY_ID='...' --from-literal=AWS_SECRET_ACCESS_KEY='...'
+kubectl create secret generic s3-restore-credentials -n pgkube-guard \
+  --from-literal=AWS_ACCESS_KEY_ID='...' --from-literal=AWS_SECRET_ACCESS_KEY='...'
 
-# 2. Set your host, database, bucket and check query
-$EDITOR k8s/configmap.yaml
+# 2. Write your settings
+cp examples/values.example.yaml my-values.yaml
 
-# 3. Deploy
-kubectl apply -k k8s/
-kubectl apply -f secrets.yaml
+# 3. Install
+helm install my-backup ./charts/pgkube-guard -n pgkube-guard -f my-values.yaml
 ```
 
-Run a backup right now instead of waiting for 02:00:
+Run a backup right now instead of waiting for the schedule:
 
 ```bash
-kubectl create job --from=cronjob/pg-backup manual-backup -n pgkube-guard
+kubectl create job --from=cronjob/my-backup-pgkube-guard-backup manual-backup -n pgkube-guard
 ```
 
 ## Configuration
 
-| Key (`k8s/configmap.yaml`) | Description |
-|---|---|
-| `PGHOST`, `PGPORT`, `PGDATABASE` | Source database |
-| `PGSSLMODE` | `require` for managed databases, `prefer` for a Postgres without TLS |
-| `S3_BUCKET`, `S3_PREFIX`, `AWS_DEFAULT_REGION` | Where dumps are stored |
-| `AWS_ENDPOINT_URL` | Set it for MinIO or any S3-compatible storage |
-| `RETENTION` | Number of dumps to keep |
-| `CHECK_QUERY` | Query run after restore, must return a number > 0 |
-| `NOTIFY_ON_SUCCESS` | Also send a Slack message when everything is fine |
+All settings live in [`values.yaml`](charts/pgkube-guard/values.yaml). The main ones:
 
-Notifications (Slack webhook, healthchecks.io-style pings) are configured in the `notifications` Secret.
+| Key | Description |
+|---|---|
+| `postgres.host`, `postgres.database` | Source database (required) |
+| `postgres.existingSecret` | Secret holding the Postgres username and password |
+| `postgres.sslMode` | `require` for managed databases, `prefer` for a Postgres without TLS |
+| `storage.s3.bucket`, `storage.s3.region` | Where dumps are stored (bucket required) |
+| `storage.s3.endpoint` | Set it for MinIO or any S3-compatible storage |
+| `storage.s3.backupCredentials` / `restoreCredentials` | Write and read-only S3 credentials |
+| `backup.schedule`, `backup.retention` | When to back up, how many dumps to keep |
+| `restoreTest.checkQuery` | Query run after restore, must return a number > 0 |
+| `notifications.*` | Slack webhook and healthchecks.io-style pings |
+
+Credentials can also be passed inline (`postgres.username`, `storage.s3.backupCredentials.accessKeyId`...), the chart then creates the Secrets. Existing Secrets are recommended.
 
 ## Roadmap
 
 - [x] Raw Kubernetes manifests
-- [ ] Helm chart
+- [x] Helm chart
 - [ ] Release automation and ArtifactHub listing
 - [ ] Operator with a `PostgresBackup` CRD

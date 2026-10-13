@@ -1,0 +1,30 @@
+# Example values: copy it, fill in your settings, then
+# helm install my-backup ./charts/pgkube-guard -n pgkube-guard --create-namespace -f my-values.yaml
+
+postgres:
+  host: postgres.my-app.svc.cluster.local
+  database: mydb
+  sslMode: prefer
+  existingSecret: postgres-credentials      # keys: username, password
+
+storage:
+  s3:
+    bucket: my-backups
+    region: eu-west-3
+    backupCredentials:
+      existingSecret: s3-backup-credentials   # keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+    restoreCredentials:
+      existingSecret: s3-restore-credentials  # keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+
+backup:
+  schedule: "0 2 * * *"
+  timeZone: Europe/Paris
+  retention: 7
+
+restoreTest:
+  schedule: "0 4 * * *"
+  timeZone: Europe/Paris
+  checkQuery: "SELECT COUNT(*) FROM users"
+
+notifications:
+  slackWebhookUrl: ""

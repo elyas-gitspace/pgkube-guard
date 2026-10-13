@@ -1,0 +1,96 @@
+# Backup: pg_dump, upload to S3, apply retention, notify
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "pgkube-guard.fullname" . }}-backup
+  labels:
+    {{- include "pgkube-guard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  timeZone: {{ .Values.backup.timeZone | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.backup.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ .Values.backup.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ .Values.backup.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            {{- include "pgkube-guard.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+            {{- with .Values.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          {{- include "pgkube-guard.podSpecCommon" . | nindent 10 }}
+          volumes:
+            - name: work
+              emptyDir:
+                sizeLimit: {{ .Values.backup.workVolumeSize }}
+            - name: scripts
+              configMap:
+                name: {{ include "pgkube-guard.fullname" . }}-scripts
+                defaultMode: 0555
+
+          # Step 1: dump the database
+          initContainers:
+            - name: dump
+              image: "{{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}"
+              imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+              command: ["/bin/sh", "/scripts/backup-dump.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ include "pgkube-guard.fullname" . }}-config
+              env:
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "pgkube-guard.postgresSecretName" . }}
+                      key: {{ .Values.postgres.secretKeys.username }}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "pgkube-guard.postgresSecretName" . }}
+                      key: {{ .Values.postgres.secretKeys.password }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml .Values.backup.resources.dump | nindent 16 }}
+
+          # Step 2: upload, retention, notification
+          containers:
+            - name: upload
+              image: "{{ .Values.images.awsCli.repository }}:{{ .Values.images.awsCli.tag }}"
+              imagePullPolicy: {{ .Values.images.awsCli.pullPolicy }}
+              command: ["/bin/sh", "/scripts/backup-upload.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ include "pgkube-guard.fullname" . }}-config
+                - secretRef:
+                    name: {{ include "pgkube-guard.notificationsSecretName" . }}
+                    optional: true
+              env:
+                {{- include "pgkube-guard.awsEnv" (dict "secretName" (include "pgkube-guard.s3BackupSecretName" .) "creds" .Values.storage.s3.backupCredentials) | nindent 16 }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml .Values.backup.resources.upload | nindent 16 }}

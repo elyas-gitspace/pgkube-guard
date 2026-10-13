@@ -1,0 +1,15 @@
+# Values used by the CI to render and validate the chart
+postgres:
+  host: postgres.my-app.svc.cluster.local
+  database: mydb
+  username: backup_user
+  password: ci-password
+storage:
+  s3:
+    bucket: ci-bucket
+    backupCredentials:
+      accessKeyId: ci-key
+      secretAccessKey: ci-secret
+    restoreCredentials:
+      accessKeyId: ci-key
+      secretAccessKey: ci-secret
