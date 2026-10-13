@@ -9,10 +9,10 @@ data:
   PGHOST: postgres.my-app.svc.cluster.local
   PGPORT: "5432"
   PGDATABASE: mydb
-  PGSSLMODE: prefer                          # use "prefer" for a Postgres without TLS (e.g. in-cluster)
+  PGSSLMODE: prefer                          # use "require" for managed databases (RDS, Cloud SQL)
 
   # Storage
-  S3_BUCKET: pgkube-guard-backups-elyas-test
+  S3_BUCKET: my-backups
   S3_PREFIX: "pgkube-guard/"
   AWS_DEFAULT_REGION: eu-west-3
   # AWS_ENDPOINT_URL: http://minio.minio.svc.cluster.local:9000   # uncomment for MinIO / S3-compatible
