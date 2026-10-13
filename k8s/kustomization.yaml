@@ -1,0 +1,19 @@
+# Apply everything in the right order with: kubectl apply -k k8s/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pgkube-guard
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: pgkube-guard
+      app.kubernetes.io/part-of: pgkube-guard
+    includeTemplates: true
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - configmap.yaml
+  - scripts.yaml
+  - backup.yaml
+  - restore-test.yaml

@@ -1,1 +1,3 @@
-k8s/secrets-panel.yaml
+# Real credentials, never commit them
+secrets.yaml
+*.secret.yaml

@@ -3,11 +3,14 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: pg-restore-test
-  namespace: pg-backup
+  namespace: pgkube-guard
+  labels:
+    app.kubernetes.io/component: restore-test
 spec:
   schedule: "0 4 * * *"
   timeZone: Europe/Paris
   concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
@@ -16,8 +19,19 @@ spec:
       activeDeadlineSeconds: 3600
       ttlSecondsAfterFinished: 86400
       template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: restore-test
         spec:
           restartPolicy: Never
+          serviceAccountName: pgkube-guard
+          # Same user for every container, so they can all read and write the shared /work files
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile: { type: RuntimeDefault }
           # No postgres-credentials here on purpose: this pod can never reach production
           volumes:
             - name: work
@@ -29,16 +43,21 @@ spec:
             - name: scripts
               configMap:
                 name: pg-backup-scripts
-                defaultMode: 0755
+                defaultMode: 0555
 
           initContainers:
             # Step 1: download the latest dump (read-only S3 credentials)
             - name: download
-              image: amazon/aws-cli:latest
+              image: amazon/aws-cli:2.37.13
               command: ["/bin/sh", "/scripts/restore-download.sh"]
+              env:
+                - { name: HOME, value: /tmp }
               envFrom:
                 - configMapRef: { name: pg-backup-config }
                 - secretRef:    { name: s3-restore-credentials }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
               volumeMounts:
                 - { name: work, mountPath: /work }
                 - { name: scripts, mountPath: /scripts }
@@ -50,11 +69,11 @@ spec:
             - name: restore-check
               image: postgres:17-alpine
               command: ["/bin/sh", "/scripts/restore-check.sh"]
-              securityContext:
-                runAsUser: 70        # "postgres" user of the alpine image
-                runAsGroup: 70
               envFrom:
                 - configMapRef: { name: pg-backup-config }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
               volumeMounts:
                 - { name: work, mountPath: /work }
                 - { name: pgdata, mountPath: /pgdata }
@@ -66,11 +85,16 @@ spec:
           # Step 3: verdict and notification
           containers:
             - name: report
-              image: amazon/aws-cli:latest
+              image: amazon/aws-cli:2.37.13
               command: ["/bin/sh", "/scripts/restore-report.sh"]
+              env:
+                - { name: HOME, value: /tmp }
               envFrom:
                 - configMapRef: { name: pg-backup-config }
                 - secretRef:    { name: notifications }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
               volumeMounts:
                 - { name: work, mountPath: /work }
                 - { name: scripts, mountPath: /scripts }

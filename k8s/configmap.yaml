@@ -3,17 +3,17 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: pg-backup-config
-  namespace: pg-backup
+  namespace: pgkube-guard
 data:
   # Source database (in-cluster DNS, RDS endpoint or VM IP)
   PGHOST: postgres.my-app.svc.cluster.local
   PGPORT: "5432"
   PGDATABASE: mydb
-  PGSSLMODE: require                           # use "prefer" for a pg source hosted on your cluster
+  PGSSLMODE: require                          # use "prefer" for a Postgres without TLS (e.g. in-cluster)
 
   # Storage
   S3_BUCKET: my-backups
-  S3_PREFIX: "pg-backup-kit/"
+  S3_PREFIX: "pgkube-guard/"
   AWS_DEFAULT_REGION: eu-west-3
   # AWS_ENDPOINT_URL: http://minio.minio.svc.cluster.local:9000   # uncomment for MinIO / S3-compatible
 

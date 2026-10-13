@@ -3,11 +3,14 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: pg-backup
-  namespace: pg-backup
+  namespace: pgkube-guard
+  labels:
+    app.kubernetes.io/component: backup
 spec:
   schedule: "0 2 * * *"
   timeZone: Europe/Paris
   concurrencyPolicy: Forbid          # never two backups at once
+  startingDeadlineSeconds: 3600      # still run if the controller missed the slot by less than 1h
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
@@ -16,8 +19,18 @@ spec:
       activeDeadlineSeconds: 3600    # kill the job after 1h
       ttlSecondsAfterFinished: 86400 # clean up finished jobs after 24h
       template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: backup
         spec:
           restartPolicy: Never
+          serviceAccountName: pgkube-guard
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70            # "postgres" user of the alpine image, shared by all containers
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile: { type: RuntimeDefault }
           volumes:
             - name: work
               emptyDir:
@@ -25,9 +38,9 @@ spec:
             - name: scripts
               configMap:
                 name: pg-backup-scripts
-                defaultMode: 0755
+                defaultMode: 0555
 
-          # Step 1: dump the database (call the script backup-dump.sh)
+          # Step 1: dump the database (backup-dump.sh)
           initContainers:
             - name: dump
               image: postgres:17-alpine
@@ -35,6 +48,9 @@ spec:
               envFrom:
                 - configMapRef: { name: pg-backup-config }
                 - secretRef:    { name: postgres-credentials }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
               volumeMounts:
                 - { name: work, mountPath: /work }
                 - { name: scripts, mountPath: /scripts }
@@ -42,15 +58,20 @@ spec:
                 requests: { cpu: 100m, memory: 128Mi }
                 limits:   { memory: 512Mi }
 
-          # Step 2: upload, retention, notification (call the script backup-upload.sh)
+          # Step 2: upload, retention, notification (backup-upload.sh)
           containers:
             - name: upload
-              image: amazon/aws-cli:latest
+              image: amazon/aws-cli:2.37.13
               command: ["/bin/sh", "/scripts/backup-upload.sh"]
+              env:
+                - { name: HOME, value: /tmp }   # aws-cli needs a writable home as non-root
               envFrom:
                 - configMapRef: { name: pg-backup-config }
                 - secretRef:    { name: s3-backup-credentials }
                 - secretRef:    { name: notifications }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
               volumeMounts:
                 - { name: work, mountPath: /work }
                 - { name: scripts, mountPath: /scripts }
