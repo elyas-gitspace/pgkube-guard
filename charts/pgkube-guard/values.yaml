@@ -1,0 +1,126 @@
+# Source database to back up (in-cluster, RDS, Cloud SQL, VM...)
+postgres:
+  host: ""                 # required, e.g. postgres.my-app.svc.cluster.local
+  port: 5432
+  database: ""             # required
+  sslMode: prefer          # use "require" for managed databases (RDS, Cloud SQL)
+  # Read-only user, from an existing Secret (recommended) or inline values
+  existingSecret: ""
+  secretKeys:
+    username: username
+    password: password
+  username: ""
+  password: ""
+
+# Where dumps are stored (AWS S3 or any S3-compatible storage)
+storage:
+  s3:
+    bucket: ""             # required
+    prefix: pgkube-guard/
+    region: eu-west-3
+    endpoint: ""           # set for MinIO or another S3-compatible storage
+    # Write access (put, list, delete), used by the backup job
+    backupCredentials:
+      existingSecret: ""
+      secretKeys:
+        accessKeyId: AWS_ACCESS_KEY_ID
+        secretAccessKey: AWS_SECRET_ACCESS_KEY
+      accessKeyId: ""
+      secretAccessKey: ""
+    # Read-only access (get, list), used by the restore test
+    restoreCredentials:
+      existingSecret: ""
+      secretKeys:
+        accessKeyId: AWS_ACCESS_KEY_ID
+        secretAccessKey: AWS_SECRET_ACCESS_KEY
+      accessKeyId: ""
+      secretAccessKey: ""
+
+backup:
+  schedule: "0 2 * * *"
+  timeZone: Etc/UTC
+  retention: 7             # number of dumps to keep
+  workVolumeSize: 10Gi     # must hold one full dump
+  startingDeadlineSeconds: 3600
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 86400
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  resources:
+    dump:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+    upload:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+
+restoreTest:
+  enabled: true
+  schedule: "0 4 * * *"
+  timeZone: Etc/UTC
+  # Must return a number greater than 0, e.g. SELECT COUNT(*) FROM users
+  checkQuery: "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public'"
+  workVolumeSize: 10Gi     # must hold one full dump
+  dataVolumeSize: 20Gi     # must hold the restored database
+  startingDeadlineSeconds: 3600
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 86400
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  resources:
+    download:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+    restore:
+      requests: { cpu: 250m, memory: 256Mi }
+      limits: { memory: 1Gi }
+    report:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { memory: 128Mi }
+
+notifications:
+  notifyOnSuccess: false
+  # Existing Secret with keys SLACK_WEBHOOK_URL, HEALTHCHECK_URL_BACKUP, HEALTHCHECK_URL_RESTORE
+  existingSecret: ""
+  slackWebhookUrl: ""
+  healthcheck:
+    backupUrl: ""          # e.g. https://hc-ping.com/<uuid>
+    restoreUrl: ""
+
+images:
+  # pg_dump must be at least the major version of your Postgres server
+  postgres:
+    repository: postgres
+    tag: 17-alpine
+    pullPolicy: IfNotPresent
+  awsCli:
+    repository: amazon/aws-cli
+    tag: "2.37.13"
+    pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+
+# All containers share this user so they can read and write the same /work files
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 70            # "postgres" user of the alpine image
+  runAsGroup: 70
+  fsGroup: 70
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+nameOverride: ""
+fullnameOverride: ""

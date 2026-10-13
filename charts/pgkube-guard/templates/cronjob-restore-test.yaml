@@ -1,0 +1,114 @@
+{{- if .Values.restoreTest.enabled }}
+# Restore test: fetch the latest dump, restore it into a throwaway Postgres, run the check query
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "pgkube-guard.fullname" . }}-restore-test
+  labels:
+    {{- include "pgkube-guard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restore-test
+spec:
+  schedule: {{ .Values.restoreTest.schedule | quote }}
+  timeZone: {{ .Values.restoreTest.timeZone | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.restoreTest.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.restoreTest.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.restoreTest.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ .Values.restoreTest.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ .Values.restoreTest.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            {{- include "pgkube-guard.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: restore-test
+            {{- with .Values.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          {{- include "pgkube-guard.podSpecCommon" . | nindent 10 }}
+          # No database credentials here on purpose: this pod can never reach production
+          volumes:
+            - name: work
+              emptyDir:
+                sizeLimit: {{ .Values.restoreTest.workVolumeSize }}
+            - name: pgdata
+              emptyDir:
+                sizeLimit: {{ .Values.restoreTest.dataVolumeSize }}
+            - name: scripts
+              configMap:
+                name: {{ include "pgkube-guard.fullname" . }}-scripts
+                defaultMode: 0555
+
+          initContainers:
+            # Step 1: download the latest dump (read-only S3 credentials)
+            - name: download
+              image: "{{ .Values.images.awsCli.repository }}:{{ .Values.images.awsCli.tag }}"
+              imagePullPolicy: {{ .Values.images.awsCli.pullPolicy }}
+              command: ["/bin/sh", "/scripts/restore-download.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ include "pgkube-guard.fullname" . }}-config
+              env:
+                {{- include "pgkube-guard.awsEnv" (dict "secretName" (include "pgkube-guard.s3RestoreSecretName" .) "creds" .Values.storage.s3.restoreCredentials) | nindent 16 }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml .Values.restoreTest.resources.download | nindent 16 }}
+
+            # Step 2: throwaway Postgres, restore, check query
+            - name: restore-check
+              image: "{{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}"
+              imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+              command: ["/bin/sh", "/scripts/restore-check.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ include "pgkube-guard.fullname" . }}-config
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: pgdata
+                  mountPath: /pgdata
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml .Values.restoreTest.resources.restore | nindent 16 }}
+
+          # Step 3: verdict and notification
+          containers:
+            - name: report
+              image: "{{ .Values.images.awsCli.repository }}:{{ .Values.images.awsCli.tag }}"
+              imagePullPolicy: {{ .Values.images.awsCli.pullPolicy }}
+              command: ["/bin/sh", "/scripts/restore-report.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ include "pgkube-guard.fullname" . }}-config
+                - secretRef:
+                    name: {{ include "pgkube-guard.notificationsSecretName" . }}
+                    optional: true
+              env:
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml .Values.restoreTest.resources.report | nindent 16 }}
+{{- end }}

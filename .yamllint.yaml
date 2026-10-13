@@ -1,6 +1,10 @@
 # yamllint rules for Kubernetes manifests
 extends: default
 
+# Helm templates are not plain YAML, they are checked by helm lint instead
+ignore: |
+  charts/*/templates/
+
 rules:
   line-length:
     max: 160

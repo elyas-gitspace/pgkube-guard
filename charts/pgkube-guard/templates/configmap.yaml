@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pgkube-guard.fullname" . }}-config
+  labels:
+    {{- include "pgkube-guard.labels" . | nindent 4 }}
+data:
+  PGHOST: {{ required "postgres.host is required" .Values.postgres.host | quote }}
+  PGPORT: {{ .Values.postgres.port | quote }}
+  PGDATABASE: {{ required "postgres.database is required" .Values.postgres.database | quote }}
+  PGSSLMODE: {{ .Values.postgres.sslMode | quote }}
+  S3_BUCKET: {{ required "storage.s3.bucket is required" .Values.storage.s3.bucket | quote }}
+  S3_PREFIX: {{ .Values.storage.s3.prefix | quote }}
+  AWS_DEFAULT_REGION: {{ .Values.storage.s3.region | quote }}
+  {{- with .Values.storage.s3.endpoint }}
+  AWS_ENDPOINT_URL: {{ . | quote }}
+  {{- end }}
+  RETENTION: {{ .Values.backup.retention | quote }}
+  CHECK_QUERY: {{ .Values.restoreTest.checkQuery | quote }}
+  NOTIFY_ON_SUCCESS: {{ .Values.notifications.notifyOnSuccess | quote }}
