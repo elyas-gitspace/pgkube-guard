@@ -132,9 +132,9 @@ kubectl create secret generic s3-restore-credentials -n pgkube-guard \
 **4 · Describe your setup**
 
 ```bash
-git clone https://github.com/elyas-gitspace/pgkube-guard.git
-cd pgkube-guard
-cp examples/values.example.yaml my-values.yaml
+helm repo add pgkube-guard https://elyas-gitspace.github.io/pgkube-guard
+helm repo update
+curl -sSLo my-values.yaml https://raw.githubusercontent.com/elyas-gitspace/pgkube-guard/main/examples/values.example.yaml
 ```
 
 Open `my-values.yaml` and point it to your database, your bucket and the Secrets you just created:
@@ -161,7 +161,7 @@ restoreTest:
 **5 · Install**
 
 ```bash
-helm install my-backup ./charts/pgkube-guard -n pgkube-guard -f my-values.yaml
+helm install my-backup pgkube-guard/pgkube-guard -n pgkube-guard -f my-values.yaml
 ```
 
 **6 · Don't wait for tonight**
@@ -248,9 +248,9 @@ A heartbeat service such as [healthchecks.io](https://healthchecks.io) expects a
 ## Day-to-day
 
 ```bash
-helm upgrade my-backup ./charts/pgkube-guard -n pgkube-guard -f my-values.yaml   # apply new settings
-helm rollback my-backup 1 -n pgkube-guard                                          # go back to a previous version
-helm uninstall my-backup -n pgkube-guard                                           # remove everything
+helm upgrade my-backup pgkube-guard/pgkube-guard -n pgkube-guard -f my-values.yaml   # apply new settings
+helm rollback my-backup 1 -n pgkube-guard                                            # go back to a previous version
+helm uninstall my-backup -n pgkube-guard                                             # remove everything
 ```
 
 Your dumps stay in your bucket after an uninstall. pgkube-guard never deletes data it did not create.
@@ -295,7 +295,8 @@ The dump restored fine but the table is empty, or the query targets the wrong ta
 
 - [x] Nightly backup and restore test
 - [x] Helm chart
-- [ ] Published Helm repository and ArtifactHub listing
+- [x] Published Helm repository
+- [ ] ArtifactHub listing
 - [ ] Built-in Prometheus metrics
 - [ ] Operator with a `PostgresBackup` custom resource
 
