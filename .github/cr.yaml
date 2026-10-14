@@ -1,0 +1,2 @@
+# chart-releaser settings: name GitHub releases "v0.1.0" instead of "pgkube-guard-0.1.0"
+release-name-template: "v{{ .Version }}"
