@@ -1,0 +1,39 @@
+# Example values, verify-only mode: your backups are made by wal-g, pgkube-guard only proves they restore
+# helm install my-guard pgkube-guard/pgkube-guard -n pgkube-guard --create-namespace -f my-values.yaml
+
+postgres:
+  database: mydb                              # database where the check query runs after the restore
+
+storage:
+  s3:
+    region: eu-west-3
+    verifyCredentials:
+      existingSecret: s3-verify-credentials   # read-only access to your wal-g bucket
+
+backup:
+  enabled: false                              # wal-g already does the backups
+
+verify:
+  source: walg
+  walg:
+    s3Prefix: s3://my-walg-bucket/main        # same value as WALG_S3_PREFIX on your database
+    # extraEnvSecret: walg-encryption         # e.g. a Secret holding WALG_LIBSODIUM_KEY if backups are encrypted
+  freshness:
+    maxBackupAgeHours: 26                     # alert if the last base backup is older than 26h
+    maxWalAgeMinutes: 15                      # alert if WAL archiving stopped for 15 min
+  restoreDrill:
+    schedule: "0 4 * * 0"                     # every Sunday at 04:00: base backup + full WAL replay
+    timeZone: Europe/Paris
+    checkQuery: "SELECT COUNT(*) FROM users"
+    maxRestoreSeconds: 1800                   # fail if restoring takes more than 30 min (RTO)
+    maxDataLagSeconds: 900                    # fail if more than 15 min of data would be lost (RPO)
+
+images:
+  postgresWalg:
+    tag: "17"                                 # same major version as your database
+
+metrics:
+  pushgatewayUrl: http://prometheus-pushgateway.monitoring.svc:9091
+
+notifications:
+  slackWebhookUrl: ""

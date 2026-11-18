@@ -1,4 +1,6 @@
 #!/bin/sh
+# Backup intégré, étape 1 (image postgres) : pg_dump dans /work
+# Sort toujours en 0 pour que l'étape 2 puisse notifier en cas d'erreur (le verdict passe par /work/status)
 set -u
 FILE="/work/${PGDATABASE}-$(date -u +%Y-%m-%dT%H%M%SZ).dump"
 echo "Dumping $PGDATABASE from $PGHOST..."

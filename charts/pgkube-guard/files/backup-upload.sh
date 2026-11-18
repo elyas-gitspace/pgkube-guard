@@ -1,7 +1,9 @@
 #!/bin/sh
+# Backup intégré, étape 2 (image aws-cli) : upload dans S3, rétention, notification
 set -u
 . /scripts/notify.sh
 
+# Arrête le job en échec et prévient
 fail() {
   echo "FAILED: $1"
   notify_slack "❌ Backup $PGDATABASE failed: $1"
@@ -20,7 +22,7 @@ echo "Uploading to s3://$S3_BUCKET/$KEY ($SIZE)..."
 aws s3 cp "$FILE" "s3://$S3_BUCKET/$KEY" --only-show-errors \
   || fail "S3 upload error"
 
-# Keep only the $RETENTION most recent dumps
+# Garde seulement les $RETENTION dumps les plus récents, supprime les plus vieux
 KEYS=$(aws s3api list-objects-v2 --bucket "$S3_BUCKET" \
   --prefix "${S3_PREFIX}${PGDATABASE}-" \
   --query 'sort_by(Contents,&LastModified)[].Key' --output text)

@@ -1,0 +1,22 @@
+# Values utilisées par la CI : mode vérification seule, backups faits par wal-g
+postgres:
+  database: mydb
+storage:
+  s3:
+    region: eu-west-3
+    verifyCredentials:
+      existingSecret: walg-readonly
+backup:
+  enabled: false
+verify:
+  source: walg
+  walg:
+    s3Prefix: s3://ci-bucket/walg/main
+    extraEnvSecret: walg-encryption
+    extraConfig: |
+      shared_buffers = 256MB
+      work_mem = 16MB
+  restoreDrill:
+    checkQuery: "SELECT COUNT(*) FROM users"
+    maxRestoreSeconds: 1800
+    maxDataLagSeconds: 3600

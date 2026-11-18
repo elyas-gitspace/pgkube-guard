@@ -1,16 +1,25 @@
-pgkube-guard is installed in namespace {{ .Release.Namespace }}.
-
-Backup:       {{ .Values.backup.schedule }} ({{ .Values.backup.timeZone }}) -> s3://{{ .Values.storage.s3.bucket }}/{{ .Values.storage.s3.prefix }}
-{{- if .Values.restoreTest.enabled }}
-Restore test: {{ .Values.restoreTest.schedule }} ({{ .Values.restoreTest.timeZone }})
+{{- $fullname := include "pgkube-guard.fullname" . -}}
+pgkube-guard is installed in namespace {{ .Release.Namespace }}, verifying {{ .Values.verify.source }} backups of "{{ .Values.postgres.database }}".
+{{ if .Values.backup.enabled }}
+Backup:        {{ .Values.backup.schedule }} ({{ .Values.backup.timeZone }}) -> s3://{{ .Values.storage.s3.bucket }}/{{ .Values.storage.s3.prefix }}
+{{- end }}
+{{- if .Values.verify.freshness.enabled }}
+Freshness:     {{ .Values.verify.freshness.schedule }} ({{ .Values.verify.freshness.timeZone }}), alert if the last backup is older than {{ .Values.verify.freshness.maxBackupAgeHours }}h
+{{- end }}
+{{- if .Values.verify.restoreDrill.enabled }}
+Restore drill: {{ .Values.verify.restoreDrill.schedule }} ({{ .Values.verify.restoreDrill.timeZone }})
 {{- end }}
 
-Run a backup now:
-  kubectl create job --from=cronjob/{{ include "pgkube-guard.fullname" . }}-backup manual-backup -n {{ .Release.Namespace }}
-  kubectl logs -n {{ .Release.Namespace }} job/manual-backup --all-containers -f
-{{- if .Values.restoreTest.enabled }}
-
-Run a restore test now:
-  kubectl create job --from=cronjob/{{ include "pgkube-guard.fullname" . }}-restore-test manual-restore -n {{ .Release.Namespace }}
-  kubectl logs -n {{ .Release.Namespace }} job/manual-restore --all-containers -f
+Run a job now instead of waiting for its schedule:
+{{- if .Values.backup.enabled }}
+  kubectl create job --from=cronjob/{{ $fullname }}-backup manual-backup -n {{ .Release.Namespace }}
 {{- end }}
+{{- if .Values.verify.freshness.enabled }}
+  kubectl create job --from=cronjob/{{ $fullname }}-freshness manual-freshness -n {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.verify.restoreDrill.enabled }}
+  kubectl create job --from=cronjob/{{ $fullname }}-restore-drill manual-drill -n {{ .Release.Namespace }}
+{{- end }}
+
+Then follow it:
+  kubectl logs -n {{ .Release.Namespace }} job/<job-name> --all-containers -f

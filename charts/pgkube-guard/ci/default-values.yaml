@@ -1,4 +1,4 @@
-# Values used by the CI to render and validate the chart
+# Values utilisées par la CI : mode classique (backup pg_dump intégré + vérification)
 postgres:
   host: postgres.my-app.svc.cluster.local
   database: mydb
@@ -10,6 +10,8 @@ storage:
     backupCredentials:
       accessKeyId: ci-key
       secretAccessKey: ci-secret
-    restoreCredentials:
+    verifyCredentials:
       accessKeyId: ci-key
       secretAccessKey: ci-secret
+metrics:
+  pushgatewayUrl: http://pushgateway.monitoring.svc:9091

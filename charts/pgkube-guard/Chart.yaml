@@ -1,9 +1,9 @@
 apiVersion: v2
 name: pgkube-guard
-description: Automated PostgreSQL backups to S3, with nightly restore tests to prove your dumps actually work
+description: Prove your PostgreSQL backups actually restore. Freshness checks and automated restore drills for pg_dump and wal-g, with RTO and RPO metrics
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/elyas-gitspace/pgkube-guard
 sources:
@@ -15,6 +15,9 @@ keywords:
   - restore
   - s3
   - cronjob
+  - wal-g
+  - pitr
+  - disaster-recovery
 maintainers:
   - name: elyas-gitspace
     url: https://github.com/elyas-gitspace
