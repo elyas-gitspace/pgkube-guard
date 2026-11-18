@@ -1,0 +1,54 @@
+{{- if .Values.verify.freshness.enabled }}
+{{- $fullname := include "pgkube-guard.fullname" . }}
+# Freshness check : liste le bucket pour vérifier que le dernier backup (et les WAL pour wal-g) sont récents
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $fullname }}-freshness
+  labels:
+    {{- include "pgkube-guard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: freshness
+spec:
+  schedule: {{ .Values.verify.freshness.schedule | quote }}
+  timeZone: {{ .Values.verify.freshness.timeZone | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.verify.freshness.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ .Values.verify.freshness.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.verify.freshness.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ .Values.verify.freshness.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ .Values.verify.freshness.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          {{- include "pgkube-guard.podMetadata" (dict "root" . "component" "freshness") | nindent 10 }}
+        spec:
+          {{- include "pgkube-guard.podSpecCommon" (dict "root" . "securityContext" .Values.podSecurityContext) | nindent 10 }}
+          volumes:
+            - name: scripts
+              configMap:
+                name: {{ $fullname }}-scripts
+                defaultMode: 0555
+          # Un seul container : il ne fait que lire le bucket (clés S3 en lecture seule)
+          containers:
+            - name: freshness
+              image: "{{ .Values.images.awsCli.repository }}:{{ .Values.images.awsCli.tag }}"
+              imagePullPolicy: {{ .Values.images.awsCli.pullPolicy }}
+              command: ["/bin/sh", "/scripts/freshness-check.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ $fullname }}-config
+                - secretRef:
+                    name: {{ include "pgkube-guard.notificationsSecretName" . }}
+                    optional: true
+              env:
+                {{- include "pgkube-guard.awsEnv" (dict "secretName" (include "pgkube-guard.s3VerifySecretName" .) "creds" .Values.storage.s3.verifyCredentials) | nindent 16 }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml .Values.verify.freshness.resources | nindent 16 }}
+{{- end }}

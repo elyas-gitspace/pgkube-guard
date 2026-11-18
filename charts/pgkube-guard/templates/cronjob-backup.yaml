@@ -1,4 +1,5 @@
-# Backup: pg_dump, upload to S3, apply retention, notify
+{{- if .Values.backup.enabled }}
+# Backup intégré : pg_dump, upload dans S3, rétention, notification
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -20,18 +21,9 @@ spec:
       ttlSecondsAfterFinished: {{ .Values.backup.ttlSecondsAfterFinished }}
       template:
         metadata:
-          labels:
-            {{- include "pgkube-guard.selectorLabels" . | nindent 12 }}
-            app.kubernetes.io/component: backup
-            {{- with .Values.podLabels }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
-          {{- with .Values.podAnnotations }}
-          annotations:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+          {{- include "pgkube-guard.podMetadata" (dict "root" . "component" "backup") | nindent 10 }}
         spec:
-          {{- include "pgkube-guard.podSpecCommon" . | nindent 10 }}
+          {{- include "pgkube-guard.podSpecCommon" (dict "root" . "securityContext" .Values.podSecurityContext) | nindent 10 }}
           volumes:
             - name: work
               emptyDir:
@@ -41,7 +33,7 @@ spec:
                 name: {{ include "pgkube-guard.fullname" . }}-scripts
                 defaultMode: 0555
 
-          # Step 1: dump the database
+          # Étape 1 : dump de la base dans /work
           initContainers:
             - name: dump
               image: "{{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}"
@@ -71,7 +63,7 @@ spec:
               resources:
                 {{- toYaml .Values.backup.resources.dump | nindent 16 }}
 
-          # Step 2: upload, retention, notification
+          # Étape 2 : upload dans S3, rétention, notification
           containers:
             - name: upload
               image: "{{ .Values.images.awsCli.repository }}:{{ .Values.images.awsCli.tag }}"
@@ -94,3 +86,4 @@ spec:
                   mountPath: /scripts
               resources:
                 {{- toYaml .Values.backup.resources.upload | nindent 16 }}
+{{- end }}

@@ -1,0 +1,174 @@
+{{- if .Values.verify.restoreDrill.enabled }}
+{{- $fullname := include "pgkube-guard.fullname" . }}
+{{- $drill := .Values.verify.restoreDrill }}
+{{- $walg := eq .Values.verify.source "walg" }}
+{{- /* Le restore wal-g tourne dans l'image Debian, dont l'utilisateur postgres a l'uid 999 (et pas 70 comme alpine) */}}
+{{- $podSecurity := .Values.podSecurityContext }}
+{{- if $walg }}
+{{- $uid := .Values.verify.walg.runAsUser }}
+{{- $podSecurity = merge (dict "runAsUser" $uid "runAsGroup" $uid "fsGroup" $uid) (deepCopy .Values.podSecurityContext) }}
+{{- end }}
+# Restore drill : restaure le dernier backup dans un Postgres jetable, lance la check query, mesure RTO et RPO
+# Aucun identifiant de la base de prod ici, exprès : ce pod ne peut jamais atteindre la production
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $fullname }}-restore-drill
+  labels:
+    {{- include "pgkube-guard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restore-drill
+spec:
+  schedule: {{ $drill.schedule | quote }}
+  timeZone: {{ $drill.timeZone | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ $drill.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $drill.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $drill.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ $drill.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ $drill.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          {{- include "pgkube-guard.podMetadata" (dict "root" . "component" "restore-drill") | nindent 10 }}
+        spec:
+          {{- include "pgkube-guard.podSpecCommon" (dict "root" . "securityContext" $podSecurity) | nindent 10 }}
+          volumes:
+            # /work : fichiers échangés entre les étapes (statut, durées, erreurs...)
+            - name: work
+              emptyDir:
+                sizeLimit: {{ $drill.workVolumeSize }}
+            # /pgdata : disque du Postgres jetable, détruit avec le pod
+            - name: pgdata
+              emptyDir:
+                sizeLimit: {{ $drill.dataVolumeSize }}
+            - name: scripts
+              configMap:
+                name: {{ $fullname }}-scripts
+                defaultMode: 0555
+            {{- if $walg }}
+            # /walg : binaire wal-g téléchargé à l'étape 1
+            - name: walg
+              emptyDir:
+                sizeLimit: 200Mi
+            {{- end }}
+
+          initContainers:
+          {{- if $walg }}
+            # Étape 1 (wal-g) : télécharger le binaire wal-g
+            - name: fetch-walg
+              image: "{{ .Values.images.curl.repository }}:{{ .Values.images.curl.tag }}"
+              imagePullPolicy: {{ .Values.images.curl.pullPolicy }}
+              command: ["/bin/sh", "/scripts/fetch-walg.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ $fullname }}-config
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: walg
+                  mountPath: /walg
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml $drill.resources.download | nindent 16 }}
+
+            # Étape 2 (wal-g) : restaurer le base backup, rejouer les WAL, check query, RTO / RPO
+            - name: restore-check
+              image: "{{ .Values.images.postgresWalg.repository }}:{{ .Values.images.postgresWalg.tag }}"
+              imagePullPolicy: {{ .Values.images.postgresWalg.pullPolicy }}
+              command: ["/bin/sh", "/scripts/restore-check-walg.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ $fullname }}-config
+                {{- with .Values.verify.walg.extraEnvSecret }}
+                # Variables WALG_* en plus fournies par l'utilisateur (ex: clé de chiffrement)
+                - secretRef:
+                    name: {{ . }}
+                {{- end }}
+              env:
+                {{- include "pgkube-guard.awsEnv" (dict "secretName" (include "pgkube-guard.s3VerifySecretName" .) "creds" .Values.storage.s3.verifyCredentials) | nindent 16 }}
+                {{- include "pgkube-guard.walgEnv" . | nindent 16 }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: pgdata
+                  mountPath: /pgdata
+                - name: walg
+                  mountPath: /walg
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml $drill.resources.restore | nindent 16 }}
+          {{- else }}
+            # Étape 1 (pgdump) : télécharger le dernier dump
+            - name: download
+              image: "{{ .Values.images.awsCli.repository }}:{{ .Values.images.awsCli.tag }}"
+              imagePullPolicy: {{ .Values.images.awsCli.pullPolicy }}
+              command: ["/bin/sh", "/scripts/restore-download.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ $fullname }}-config
+              env:
+                {{- include "pgkube-guard.awsEnv" (dict "secretName" (include "pgkube-guard.s3VerifySecretName" .) "creds" .Values.storage.s3.verifyCredentials) | nindent 16 }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml $drill.resources.download | nindent 16 }}
+
+            # Étape 2 (pgdump) : Postgres jetable, pg_restore, check query, RTO / RPO
+            - name: restore-check
+              image: "{{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}"
+              imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+              command: ["/bin/sh", "/scripts/restore-check.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ $fullname }}-config
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: pgdata
+                  mountPath: /pgdata
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml $drill.resources.restore | nindent 16 }}
+          {{- end }}
+
+          # Étape 3 : verdict, seuils RTO / RPO, notifications et métriques
+          containers:
+            - name: report
+              image: "{{ .Values.images.awsCli.repository }}:{{ .Values.images.awsCli.tag }}"
+              imagePullPolicy: {{ .Values.images.awsCli.pullPolicy }}
+              command: ["/bin/sh", "/scripts/restore-report.sh"]
+              envFrom:
+                - configMapRef:
+                    name: {{ $fullname }}-config
+                - secretRef:
+                    name: {{ include "pgkube-guard.notificationsSecretName" . }}
+                    optional: true
+              env:
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                {{- toYaml $drill.resources.report | nindent 16 }}
+{{- end }}

@@ -1,3 +1,5 @@
+{{- include "pgkube-guard.validate" . }}
+# Réglages non secrets, injectés en variables d'env dans tous les containers
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -5,16 +7,36 @@ metadata:
   labels:
     {{- include "pgkube-guard.labels" . | nindent 4 }}
 data:
-  PGHOST: {{ required "postgres.host is required" .Values.postgres.host | quote }}
+  # Base de prod (PGHOST n'est utile qu'au backup intégré)
+  {{- with .Values.postgres.host }}
+  PGHOST: {{ . | quote }}
+  {{- end }}
   PGPORT: {{ .Values.postgres.port | quote }}
-  PGDATABASE: {{ required "postgres.database is required" .Values.postgres.database | quote }}
+  PGDATABASE: {{ .Values.postgres.database | quote }}
   PGSSLMODE: {{ .Values.postgres.sslMode | quote }}
-  S3_BUCKET: {{ required "storage.s3.bucket is required" .Values.storage.s3.bucket | quote }}
+  # Stockage
+  S3_BUCKET: {{ .Values.storage.s3.bucket | quote }}
   S3_PREFIX: {{ .Values.storage.s3.prefix | quote }}
   AWS_DEFAULT_REGION: {{ .Values.storage.s3.region | quote }}
+  AWS_REGION: {{ .Values.storage.s3.region | quote }}
   {{- with .Values.storage.s3.endpoint }}
   AWS_ENDPOINT_URL: {{ . | quote }}
   {{- end }}
   RETENTION: {{ .Values.backup.retention | quote }}
-  CHECK_QUERY: {{ .Values.restoreTest.checkQuery | quote }}
+  # Vérification
+  VERIFY_SOURCE: {{ .Values.verify.source | quote }}
+  WALG_S3_PREFIX: {{ .Values.verify.walg.s3Prefix | quote }}
+  WALG_SUPERUSER: {{ .Values.verify.walg.superuser | quote }}
+  WALG_BINARY_URL: {{ .Values.verify.walg.binaryUrl | quote }}
+  MAX_BACKUP_AGE_HOURS: {{ .Values.verify.freshness.maxBackupAgeHours | quote }}
+  MAX_WAL_AGE_MINUTES: {{ .Values.verify.freshness.maxWalAgeMinutes | quote }}
+  CHECK_QUERY: {{ .Values.verify.restoreDrill.checkQuery | quote }}
+  MAX_RESTORE_SECONDS: {{ .Values.verify.restoreDrill.maxRestoreSeconds | quote }}
+  MAX_DATA_LAG_SECONDS: {{ .Values.verify.restoreDrill.maxDataLagSeconds | quote }}
+  RECOVERY_TIMEOUT_SECONDS: {{ .Values.verify.restoreDrill.recoveryTimeoutSeconds | quote }}
+  # Lignes de config ajoutées au Postgres jetable du restore wal-g
+  DRILL_EXTRA_CONFIG: {{ .Values.verify.walg.extraConfig | quote }}
+  # Sorties
   NOTIFY_ON_SUCCESS: {{ .Values.notifications.notifyOnSuccess | quote }}
+  PUSHGATEWAY_URL: {{ .Values.metrics.pushgatewayUrl | quote }}
+  INSTANCE_NAME: {{ include "pgkube-guard.fullname" . | quote }}

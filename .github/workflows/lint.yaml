@@ -32,10 +32,20 @@ jobs:
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
           sudo mv kubeconform /usr/local/bin/
 
+      # Chaque fichier de ci/ est un scénario (pgdump, wal-g...) : on les lint et valide tous
       - name: Helm lint
-        run: helm lint charts/pgkube-guard -f charts/pgkube-guard/ci/default-values.yaml --strict
+        run: |
+          for f in charts/pgkube-guard/ci/*.yaml; do
+            echo "::group::$f"
+            helm lint charts/pgkube-guard -f "$f" --strict
+            echo "::endgroup::"
+          done
 
       - name: Render and validate manifests
         run: |
-          helm template my-backup charts/pgkube-guard -f charts/pgkube-guard/ci/default-values.yaml \
-            | kubeconform -strict -summary -kubernetes-version 1.31.0
+          for f in charts/pgkube-guard/ci/*.yaml; do
+            echo "::group::$f"
+            helm template my-backup charts/pgkube-guard -f "$f" \
+              | kubeconform -strict -summary -kubernetes-version 1.31.0
+            echo "::endgroup::"
+          done

@@ -7,7 +7,7 @@
 
 <p align="center">
   <b>Everyone backs up their database. Almost nobody tests the restore.</b><br>
-  pgkube-guard does both, every night, and tells you the moment something breaks.
+  pgkube-guard proves your Postgres backups actually restore, measures how long it takes and how much data you would lose, and tells you the moment something breaks.
 </p>
 
 <p align="center">
@@ -21,22 +21,35 @@
 
 ## How it works
 
-pgkube-guard is a Helm chart. You describe your setup in a single `values.yaml`, it installs two nightly CronJobs, and Kubernetes takes it from there.
+pgkube-guard is a Helm chart. You describe your setup in a single `values.yaml`, it installs a few CronJobs, and Kubernetes takes it from there.
+
+It works with the backups you already have, or makes them for you:
+
+| Your backups come from | `verify.source` | `backup.enabled` |
+|---|---|---|
+| Nothing yet: let pgkube-guard run `pg_dump` | `pgdump` | `true` |
+| [wal-g](https://github.com/wal-g/wal-g) (base backups + continuous WAL archiving) | `walg` | `false` |
 
 ```text
-  02:00   Backup
+  02:00   Backup                              (optional, pg_dump mode only)
           ├─ pg_dump your database            (read-only user)
-          ├─ upload the dump to S3            (write credentials)    
-          └─ keep the last N dumps, notify on failure
+          └─ upload the dump to S3, keep the last N
 
-  04:00   Restore test
-          ├─ download the latest dump         (read-only credentials)
-          ├─ restore it into a throwaway Postgres, inside the pod
+  hourly  Freshness check                     (cheap: only lists the bucket)
+          ├─ pg_dump: is the last dump recent enough?
+          └─ wal-g:   is the last base backup recent? is WAL archiving still running?
+
+  weekly  Restore drill                       (the real proof)
+          ├─ restore the latest backup into a throwaway Postgres, inside the pod
+          │    pg_dump: pg_restore the latest dump
+          │    wal-g:   fetch the latest base backup, then replay every archived WAL
           ├─ run your check query             e.g. SELECT COUNT(*) FROM users
-          └─ notify on failure, then vanish
+          ├─ measure RTO                      how long the restore took
+          ├─ measure RPO                      how old the restored data is
+          └─ notify, push metrics, then vanish
 ```
 
-The restore test never receives your database credentials. It cannot reach production, even by mistake.
+Verification jobs never receive your database credentials and only get read-only S3 access. They cannot reach production, even by mistake.
 
 <br>
 
@@ -59,7 +72,7 @@ GRANT pg_read_all_data TO backup_user;   -- Postgres 14+
 
 **2 · Prepare two sets of S3 credentials**
 
-One that can write (for backups), one that can only read (for restore tests). If the restore test is ever compromised, your backups stay safe.
+One that can write (for backups), one that can only read (for verification). If a verification job is ever compromised, your backups stay safe.
 
 <details>
 <summary>Minimal IAM policies for AWS</summary>
@@ -86,7 +99,7 @@ Backup user, write access limited to the `pgkube-guard/` prefix:
 }
 ```
 
-Restore user, read-only:
+Verify user, read-only:
 
 ```json
 {
@@ -124,7 +137,7 @@ kubectl create secret generic s3-backup-credentials -n pgkube-guard \
   --from-literal=AWS_ACCESS_KEY_ID='...' \
   --from-literal=AWS_SECRET_ACCESS_KEY='...'
 
-kubectl create secret generic s3-restore-credentials -n pgkube-guard \
+kubectl create secret generic s3-verify-credentials -n pgkube-guard \
   --from-literal=AWS_ACCESS_KEY_ID='...' \
   --from-literal=AWS_SECRET_ACCESS_KEY='...'
 ```
@@ -151,11 +164,13 @@ storage:
     region: eu-west-3
     backupCredentials:
       existingSecret: s3-backup-credentials
-    restoreCredentials:
-      existingSecret: s3-restore-credentials
+    verifyCredentials:
+      existingSecret: s3-verify-credentials
 
-restoreTest:
-  checkQuery: "SELECT COUNT(*) FROM users"
+verify:
+  source: pgdump
+  restoreDrill:
+    checkQuery: "SELECT COUNT(*) FROM users"
 ```
 
 **5 · Install**
@@ -166,17 +181,60 @@ helm install my-backup pgkube-guard/pgkube-guard -n pgkube-guard -f my-values.ya
 
 **6 · Don't wait for tonight**
 
-Trigger both jobs now and watch them succeed.
+Trigger the jobs now and watch them succeed.
 
 ```bash
 kubectl create job --from=cronjob/my-backup-pgkube-guard-backup first-backup -n pgkube-guard
 kubectl logs -n pgkube-guard job/first-backup --all-containers -f
 
-kubectl create job --from=cronjob/my-backup-pgkube-guard-restore-test first-restore -n pgkube-guard
-kubectl logs -n pgkube-guard job/first-restore --all-containers -f
+kubectl create job --from=cronjob/my-backup-pgkube-guard-restore-drill first-drill -n pgkube-guard
+kubectl logs -n pgkube-guard job/first-drill --all-containers -f
 ```
 
-You should see `Backup OK`, then `Restore test mydb OK … restored in Xs`. From now on, it runs every night on its own.
+You should see `Backup OK`, then something like:
+
+```text
+Restore drill mydb OK (pgdump): pgkube-guard/mydb-2026-11-18T020000Z.dump, check query = 1500, restored in 2m14s (RTO), data lag 2h05m (RPO)
+```
+
+From now on, it runs on its own.
+
+<br>
+
+## Already using wal-g?
+
+Keep your backups as they are. Turn off the built-in backup and point pgkube-guard to your wal-g bucket: it becomes a verifier only.
+
+```yaml
+postgres:
+  database: mydb                            # where the check query runs after the restore
+
+storage:
+  s3:
+    region: eu-west-3
+    verifyCredentials:
+      existingSecret: s3-verify-credentials # read-only access to your wal-g bucket
+
+backup:
+  enabled: false
+
+verify:
+  source: walg
+  walg:
+    s3Prefix: s3://my-walg-bucket/main      # same value as WALG_S3_PREFIX on your database
+  freshness:
+    maxWalAgeMinutes: 15                    # alert if WAL archiving stopped
+  restoreDrill:
+    checkQuery: "SELECT COUNT(*) FROM users"
+
+images:
+  postgresWalg:
+    tag: "17"                               # same major version as your database
+```
+
+The weekly drill fetches the latest base backup, replays every archived WAL like a real point-in-time recovery, then runs your check query. A missing or corrupted WAL segment makes it fail, which is exactly what you want to know before a real incident. A full example lives in [`examples/values.walg.example.yaml`](examples/values.walg.example.yaml).
+
+The throwaway Postgres runs with its own minimal configuration: no network listener, archiving forced off, nothing is ever written to your bucket. If your schema needs extensions loaded at startup, add them with `verify.walg.extraConfig`. Encrypted backups? Put the `WALG_*` keys in a Secret and set `verify.walg.extraEnvSecret`.
 
 <br>
 
@@ -199,20 +257,29 @@ Everything lives in [`values.yaml`](charts/pgkube-guard/values.yaml), with comme
 
 | Key | Default | What it does |
 |---|---|---|
-| `postgres.host` | | Database address (required) |
-| `postgres.database` | | Database to back up (required) |
+| `backup.enabled` | `true` | Let pgkube-guard run `pg_dump`. Set to `false` with wal-g |
+| `verify.source` | `pgdump` | Backup format to verify: `pgdump` or `walg` |
+| `postgres.host` | | Database address (required when `backup.enabled`) |
+| `postgres.database` | | Database to back up, and where the check query runs (required) |
 | `postgres.existingSecret` | | Secret holding the username and password |
 | `postgres.secretKeys` | `username` / `password` | Key names inside that Secret, if yours differ |
 | `postgres.sslMode` | `prefer` | Use `require` for managed databases |
-| `storage.s3.bucket` | | Destination bucket (required) |
+| `storage.s3.bucket` | | Bucket of the dumps (required with `pgdump`) |
 | `storage.s3.prefix` | `pgkube-guard/` | Folder inside the bucket |
 | `storage.s3.endpoint` | | Set it for MinIO or any S3-compatible storage |
 | `backup.schedule` | `0 2 * * *` | When to back up |
-| `backup.timeZone` | `Etc/UTC` | Time zone of both schedules, e.g. `Europe/Paris` |
+| `backup.timeZone` | `Etc/UTC` | Time zone of the schedule, e.g. `Europe/Paris` |
 | `backup.retention` | `7` | How many dumps to keep |
-| `restoreTest.enabled` | `true` | Turn the nightly restore test on or off |
-| `restoreTest.checkQuery` | any table exists | Must return a number greater than 0 |
-| `images.postgres.tag` | `17-alpine` | Must be at least your server's major version |
+| `verify.walg.s3Prefix` | | Your `WALG_S3_PREFIX` (required with `walg`) |
+| `verify.freshness.schedule` | `0 * * * *` | How often to check the last backup's age |
+| `verify.freshness.maxBackupAgeHours` | `26` | Alert when the last dump or base backup is older |
+| `verify.freshness.maxWalAgeMinutes` | `15` | wal-g only: alert when WAL archiving stops |
+| `verify.restoreDrill.schedule` | `0 4 * * 0` | When to run the full restore, weekly by default |
+| `verify.restoreDrill.checkQuery` | any table exists | Must return a number greater than 0 |
+| `verify.restoreDrill.maxRestoreSeconds` | `0` | Fail the drill above this restore time (RTO), `0` = no limit |
+| `verify.restoreDrill.maxDataLagSeconds` | `0` | Fail the drill above this data age (RPO), `0` = no limit |
+| `images.postgres.tag` | `17-alpine` | `pg_dump` mode: at least your server's major version |
+| `images.postgresWalg.tag` | `17` | wal-g mode: exactly your server's major version |
 
 Prefer not to create Secrets yourself? Leave `existingSecret` empty and set `postgres.username`, `postgres.password` or `accessKeyId`, `secretAccessKey` inline. The chart creates the Secrets for you. Fine for a test, not recommended for production.
 
@@ -228,6 +295,7 @@ notifications:
   notifyOnSuccess: false                                   # set to true for a daily "all good"
   healthcheck:
     backupUrl: https://hc-ping.com/<uuid>                  # alerts you if no ping arrives
+    freshnessUrl: https://hc-ping.com/<uuid>
     restoreUrl: https://hc-ping.com/<uuid>
 ```
 
@@ -235,11 +303,35 @@ A heartbeat service such as [healthchecks.io](https://healthchecks.io) expects a
 
 <br>
 
+## Metrics
+
+Point pgkube-guard to a Prometheus [Pushgateway](https://github.com/prometheus/pushgateway) and every run pushes its results:
+
+```yaml
+metrics:
+  pushgatewayUrl: http://prometheus-pushgateway.monitoring.svc:9091
+```
+
+| Metric | Meaning |
+|---|---|
+| `pgkube_guard_backup_age_seconds` | Age of the last dump or base backup |
+| `pgkube_guard_wal_age_seconds` | Age of the last archived WAL (wal-g) |
+| `pgkube_guard_freshness_ok` | `1` if the last freshness check passed |
+| `pgkube_guard_restore_drill_ok` | `1` if the last restore drill passed |
+| `pgkube_guard_restore_duration_seconds` | Time to get a usable database back (RTO) |
+| `pgkube_guard_restore_data_lag_seconds` | Age of the newest restored data (RPO) |
+| `pgkube_guard_restore_check_result` | Value returned by your check query |
+
+Every metric carries `database` and `source` labels, so one dashboard covers all your databases.
+
+<br>
+
 ## Security by design
 
 - **Read-only database access.** The backup user can read your data, never change it.
-- **Production stays out of reach.** The restore test has no database credentials at all.
-- **Split S3 permissions.** Write for backups, read for restore tests, each limited to one prefix.
+- **Production stays out of reach.** Verification jobs have no database credentials at all.
+- **Split S3 permissions.** Write for backups, read-only for verification.
+- **Nothing written back.** The throwaway Postgres has archiving forced off and no network listener.
 - **Hardened pods.** Non-root, no privilege escalation, all Linux capabilities dropped, `RuntimeDefault` seccomp.
 - **No Kubernetes API access.** Pods run with a dedicated ServiceAccount and no mounted token.
 
@@ -278,15 +370,21 @@ Your Postgres has TLS disabled, which is common in-cluster. Set <code>postgres.s
 </details>
 
 <details>
-<summary><code>no dump found</code> during the restore test</summary>
+<summary><code>no dump found</code> or <code>no base backup found</code></summary>
 <br>
-No backup has succeeded yet, or the prefix differs. Run a backup first and check <code>storage.s3.prefix</code>.
+No backup has succeeded yet, or the path differs. Check <code>storage.s3.prefix</code> (pg_dump) or <code>verify.walg.s3Prefix</code> (wal-g).
 </details>
 
 <details>
 <summary><code>check query returned '0'</code></summary>
 <br>
-The dump restored fine but the table is empty, or the query targets the wrong table. Adjust <code>restoreTest.checkQuery</code>.
+The backup restored fine but the table is empty, or the query targets the wrong table. Adjust <code>verify.restoreDrill.checkQuery</code>.
+</details>
+
+<details>
+<summary><code>WAL replay did not finish</code> or <code>Postgres stopped during the WAL replay</code></summary>
+<br>
+A WAL segment is missing or unreadable, or the replay needs more time. Read the Postgres log lines printed just above the error, and raise <code>verify.restoreDrill.recoveryTimeoutSeconds</code> for large databases.
 </details>
 
 <br>
@@ -296,8 +394,10 @@ The dump restored fine but the table is empty, or the query targets the wrong ta
 - [x] Nightly backup and restore test
 - [x] Helm chart
 - [x] Published Helm repository
+- [x] Verify-only mode for wal-g, with full WAL replay
+- [x] RTO and RPO measured on every drill, Prometheus metrics
+- [ ] pgBackRest and CloudNativePG sources
 - [ ] ArtifactHub listing
-- [ ] Built-in Prometheus metrics
 - [ ] Operator with a `PostgresBackup` custom resource
 
 <br>

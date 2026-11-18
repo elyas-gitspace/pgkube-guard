@@ -1,30 +1,35 @@
-# Example values: copy it, fill in your settings, then
-# helm install my-backup ./charts/pgkube-guard -n pgkube-guard --create-namespace -f my-values.yaml
+# Example values, built-in mode: pgkube-guard backs up with pg_dump AND verifies the dumps
+# helm install my-backup pgkube-guard/pgkube-guard -n pgkube-guard --create-namespace -f my-values.yaml
+# Already using wal-g? See values.walg.example.yaml instead
 
 postgres:
   host: postgres.my-app.svc.cluster.local
   database: mydb
   sslMode: prefer
-  existingSecret: postgres-credentials      # keys: username, password
+  existingSecret: postgres-credentials        # keys: username, password
 
 storage:
   s3:
     bucket: my-backups
     region: eu-west-3
     backupCredentials:
-      existingSecret: s3-backup-credentials   # keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-    restoreCredentials:
-      existingSecret: s3-restore-credentials  # keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+      existingSecret: s3-backup-credentials   # write access, keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+    verifyCredentials:
+      existingSecret: s3-verify-credentials   # read-only access, same keys
 
 backup:
   schedule: "0 2 * * *"
   timeZone: Europe/Paris
   retention: 7
 
-restoreTest:
-  schedule: "0 4 * * *"
-  timeZone: Europe/Paris
-  checkQuery: "SELECT COUNT(*) FROM users"
+verify:
+  source: pgdump
+  freshness:
+    maxBackupAgeHours: 26                     # alert if no dump in the last 26h
+  restoreDrill:
+    schedule: "0 4 * * 0"                     # every Sunday at 04:00
+    timeZone: Europe/Paris
+    checkQuery: "SELECT COUNT(*) FROM users"
 
 notifications:
   slackWebhookUrl: ""

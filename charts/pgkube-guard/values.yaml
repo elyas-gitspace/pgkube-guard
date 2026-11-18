@@ -1,10 +1,10 @@
-# Source database to back up (in-cluster, RDS, Cloud SQL, VM...)
+# Base Postgres de production
 postgres:
-  host: ""                 # required, e.g. postgres.my-app.svc.cluster.local
+  host: ""                 # adresse de la base, requise seulement si backup.enabled (ex: postgres.my-app.svc.cluster.local)
   port: 5432
-  database: ""             # required
-  sslMode: prefer          # use "require" for managed databases (RDS, Cloud SQL)
-  # Read-only user, from an existing Secret (recommended) or inline values
+  database: ""             # requis : base sauvegardée (pgdump) et base où lancer la check query après restore
+  sslMode: prefer          # "require" pour les bases managées (RDS, Cloud SQL)
+  # User en lecture seule, utilisé uniquement par le backup intégré (Secret existant recommandé)
   existingSecret: ""
   secretKeys:
     username: username
@@ -12,14 +12,15 @@ postgres:
   username: ""
   password: ""
 
-# Where dumps are stored (AWS S3 or any S3-compatible storage)
+# Stockage S3 (AWS S3 ou compatible, ex: MinIO)
 storage:
   s3:
-    bucket: ""             # required
-    prefix: pgkube-guard/
+    bucket: ""             # requis si verify.source = pgdump
+    prefix: pgkube-guard/  # dossier des dumps dans le bucket
     region: eu-west-3
-    endpoint: ""           # set for MinIO or another S3-compatible storage
-    # Write access (put, list, delete), used by the backup job
+    endpoint: ""           # à remplir pour MinIO ou un autre stockage compatible S3
+    forcePathStyle: false  # true pour MinIO avec wal-g
+    # Accès en écriture (put, list, delete), utilisé seulement par le backup intégré
     backupCredentials:
       existingSecret: ""
       secretKeys:
@@ -27,8 +28,8 @@ storage:
         secretAccessKey: AWS_SECRET_ACCESS_KEY
       accessKeyId: ""
       secretAccessKey: ""
-    # Read-only access (get, list), used by the restore test
-    restoreCredentials:
+    # Accès en lecture seule (get, list), utilisé par le freshness check et le restore drill
+    verifyCredentials:
       existingSecret: ""
       secretKeys:
         accessKeyId: AWS_ACCESS_KEY_ID
@@ -36,11 +37,13 @@ storage:
       accessKeyId: ""
       secretAccessKey: ""
 
+# Backup intégré (pg_dump vers S3). Mets false si tes backups sont déjà faits ailleurs (ex: wal-g)
 backup:
+  enabled: true
   schedule: "0 2 * * *"
   timeZone: Etc/UTC
-  retention: 7             # number of dumps to keep
-  workVolumeSize: 10Gi     # must hold one full dump
+  retention: 7             # nombre de dumps gardés dans le bucket
+  workVolumeSize: 10Gi     # doit pouvoir contenir un dump complet
   startingDeadlineSeconds: 3600
   activeDeadlineSeconds: 3600
   ttlSecondsAfterFinished: 86400
@@ -54,58 +57,110 @@ backup:
       requests: { cpu: 100m, memory: 128Mi }
       limits: { memory: 512Mi }
 
-restoreTest:
-  enabled: true
-  schedule: "0 4 * * *"
-  timeZone: Etc/UTC
-  # Must return a number greater than 0, e.g. SELECT COUNT(*) FROM users
-  checkQuery: "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public'"
-  workVolumeSize: 10Gi     # must hold one full dump
-  dataVolumeSize: 20Gi     # must hold the restored database
-  startingDeadlineSeconds: 3600
-  activeDeadlineSeconds: 3600
-  ttlSecondsAfterFinished: 86400
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-  resources:
-    download:
-      requests: { cpu: 100m, memory: 128Mi }
-      limits: { memory: 512Mi }
-    restore:
-      requests: { cpu: 250m, memory: 256Mi }
-      limits: { memory: 1Gi }
-    report:
+# Vérification des backups : le coeur de pgkube-guard
+verify:
+  # Format des backups à vérifier : pgdump (dumps faits par pgkube-guard) ou walg (backups faits par wal-g)
+  source: pgdump
+
+  # Réglages propres à wal-g (ignorés si source = pgdump)
+  walg:
+    s3Prefix: ""           # même valeur que WALG_S3_PREFIX sur ta prod, ex: s3://my-bucket/walg
+    # Binaire wal-g téléchargé au début du restore drill. Vide = wal-g est déjà dans images.postgresWalg
+    binaryUrl: https://github.com/wal-g/wal-g/releases/download/v3.0.10/wal-g-pg-22.04-amd64
+    # Secret optionnel avec des variables WALG_* en plus (ex: WALG_LIBSODIUM_KEY si tes backups sont chiffrés)
+    extraEnvSecret: ""
+    superuser: postgres    # rôle utilisé pour se connecter au Postgres restauré (il vient de ta prod)
+    runAsUser: 999         # uid de l'utilisateur "postgres" dans l'image Debian (pas alpine)
+    # Lignes ajoutées à la config du Postgres jetable, ex: "shared_preload_libraries = 'pg_stat_statements'"
+    extraConfig: ""
+
+  # Check léger et fréquent : est-ce que le dernier backup est assez récent ? (aucun restore)
+  freshness:
+    enabled: true
+    schedule: "0 * * * *"
+    timeZone: Etc/UTC
+    maxBackupAgeHours: 26  # alerte si le dernier dump / base backup a plus de 26h
+    maxWalAgeMinutes: 15   # walg uniquement : alerte si le dernier WAL archivé a plus de 15 min
+    startingDeadlineSeconds: 600
+    activeDeadlineSeconds: 900
+    ttlSecondsAfterFinished: 86400
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    resources:
       requests: { cpu: 50m, memory: 64Mi }
-      limits: { memory: 128Mi }
+      limits: { memory: 256Mi }
+
+  # Vrai test : restaure le dernier backup dans un Postgres jetable et mesure RTO / RPO
+  restoreDrill:
+    enabled: true
+    schedule: "0 4 * * 0"  # chaque dimanche à 4h
+    timeZone: Etc/UTC
+    # Doit renvoyer un nombre > 0, ex: SELECT COUNT(*) FROM users
+    checkQuery: "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public'"
+    maxRestoreSeconds: 0   # alerte si le restore (RTO) dépasse cette durée, 0 = pas de seuil
+    maxDataLagSeconds: 0   # alerte si les données restaurées sont plus vieilles que ça (RPO), 0 = pas de seuil
+    recoveryTimeoutSeconds: 3000  # walg : temps max laissé au replay des WAL
+    workVolumeSize: 10Gi   # pgdump : doit contenir un dump complet
+    dataVolumeSize: 20Gi   # doit contenir la base restaurée
+    startingDeadlineSeconds: 3600
+    activeDeadlineSeconds: 3600
+    ttlSecondsAfterFinished: 86400
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    resources:
+      download:
+        requests: { cpu: 100m, memory: 128Mi }
+        limits: { memory: 512Mi }
+      restore:
+        requests: { cpu: 250m, memory: 256Mi }
+        limits: { memory: 1Gi }
+      report:
+        requests: { cpu: 50m, memory: 64Mi }
+        limits: { memory: 128Mi }
+
+# Métriques Prometheus, poussées vers une Pushgateway (vide = désactivé)
+metrics:
+  pushgatewayUrl: ""       # ex: http://prometheus-pushgateway.monitoring.svc:9091
 
 notifications:
   notifyOnSuccess: false
-  # Existing Secret with keys SLACK_WEBHOOK_URL, HEALTHCHECK_URL_BACKUP, HEALTHCHECK_URL_RESTORE
+  # Secret existant avec les clés SLACK_WEBHOOK_URL, HEALTHCHECK_URL_BACKUP, HEALTHCHECK_URL_FRESHNESS, HEALTHCHECK_URL_RESTORE
   existingSecret: ""
   slackWebhookUrl: ""
   healthcheck:
-    backupUrl: ""          # e.g. https://hc-ping.com/<uuid>
+    backupUrl: ""          # ex: https://hc-ping.com/<uuid>
+    freshnessUrl: ""
     restoreUrl: ""
 
 images:
-  # pg_dump must be at least the major version of your Postgres server
+  # Image alpine pour pg_dump / pg_restore : au moins la version majeure de ton serveur
   postgres:
     repository: postgres
     tag: 17-alpine
     pullPolicy: IfNotPresent
+  # Image Debian pour le restore wal-g : MÊME version majeure que ta prod (le binaire wal-g a besoin de glibc)
+  postgresWalg:
+    repository: postgres
+    tag: "17"
+    pullPolicy: IfNotPresent
   awsCli:
     repository: amazon/aws-cli
     tag: "2.37.13"
+    pullPolicy: IfNotPresent
+  # Petite image pour télécharger le binaire wal-g
+  curl:
+    repository: curlimages/curl
+    tag: "8.11.1"
     pullPolicy: IfNotPresent
 
 serviceAccount:
   create: true
   name: ""
 
-# All containers share this user so they can read and write the same /work files
+# Tous les containers d'un pod partagent cet utilisateur pour lire et écrire les mêmes fichiers /work
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 70            # "postgres" user of the alpine image
+  runAsUser: 70            # utilisateur "postgres" de l'image alpine
   runAsGroup: 70
   fsGroup: 70
   seccompProfile:

@@ -10,8 +10,8 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Publish Helm chart
+  release: # workflow name
+    name: Publish Helm chart # job name
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,11 +23,11 @@ jobs:
           git config user.name "$GITHUB_ACTOR"
           git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v4 # download and setup Helm on the runner vm
         with:
           version: v3.16.2
 
-      - name: Run chart-releaser
+      - name: Run chart-releaser # package and publish the Helm chart
         uses: helm/chart-releaser-action@v1.7.0
         with:
           config: .github/cr.yaml
