@@ -9,3 +9,4 @@ examples/test-postgres/
 *.local.yaml
 my-values.yaml
 .DS_Store
+.DS_Store

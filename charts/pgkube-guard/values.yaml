@@ -62,7 +62,7 @@ verify:
   # Format des backups à vérifier : pgdump (dumps faits par pgkube-guard) ou walg (backups faits par wal-g)
   source: pgdump
 
-  # Réglages propres à wal-g (ignorés si source = pgdump)
+  # Réglages propres à wal-g (ignorés dans le script si source = pgdump)
   walg:
     s3Prefix: ""           # même valeur que WALG_S3_PREFIX sur ta prod, ex: s3://my-bucket/walg
     # Binaire wal-g téléchargé au début du restore drill. Vide = wal-g est déjà dans images.postgresWalg
