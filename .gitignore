@@ -8,3 +8,4 @@ examples/test-postgres/
 # Personal Helm values
 *.local.yaml
 my-values.yaml
+.DS_Store
