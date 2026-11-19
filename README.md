@@ -1,9 +1,8 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-    <img alt="pgkube-guard — Postgres backups on Kubernetes, restore-tested every night." src="docs/assets/banner-light.svg" width="100%">
-  </picture>
+  <img alt="pgkube-guard logo" src="docs/assets/logo.png" width="220">
 </p>
+
+<h1 align="center">pgkube-guard</h1>
 
 <p align="center">
   <b>Everyone backs up their database. Almost nobody tests the restore.</b><br>
