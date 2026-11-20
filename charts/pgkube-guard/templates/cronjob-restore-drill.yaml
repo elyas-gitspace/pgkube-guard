@@ -92,6 +92,9 @@ spec:
               env:
                 {{- include "pgkube-guard.awsEnv" (dict "secretName" (include "pgkube-guard.s3VerifySecretName" .) "creds" .Values.storage.s3.verifyCredentials) | nindent 16 }}
                 {{- include "pgkube-guard.walgEnv" . | nindent 16 }}
+                # Certificats racines copiés par fetch-walg (l'image postgres n'en a pas)
+                - name: SSL_CERT_FILE
+                  value: /walg/ca-certificates.crt
               securityContext:
                 {{- toYaml .Values.containerSecurityContext | nindent 16 }}
               volumeMounts:

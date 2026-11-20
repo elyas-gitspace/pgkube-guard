@@ -26,6 +26,13 @@ if ! "$WALG" backup-fetch "$PGDATA" LATEST 2>/tmp/walg.log; then
   ko "wal-g backup-fetch failed"
 fi
 
+# Un backup physique ne se restaure que dans la MÊME version majeure : on compare avant de démarrer Postgres
+BACKUP_VERSION=$(cat "$PGDATA/PG_VERSION" 2>/dev/null)
+IMAGE_VERSION=$(postgres --version | sed 's/[^0-9]*\([0-9]*\).*/\1/')
+if [ -n "$BACKUP_VERSION" ] && [ "$BACKUP_VERSION" != "$IMAGE_VERSION" ]; then
+  ko "backup is PostgreSQL $BACKUP_VERSION but the restore image is $IMAGE_VERSION: set images.postgresWalg.tag=\"$BACKUP_VERSION\""
+fi
+
 # On ignore la config de la prod (extensions, archive_command, certificats...) : le Postgres jetable a la sienne
 [ -f "$PGDATA/postgresql.auto.conf" ] && mv "$PGDATA/postgresql.auto.conf" "$PGDATA/postgresql.auto.conf.prod"
 rm -f "$PGDATA/postmaster.pid" "$PGDATA/standby.signal"
