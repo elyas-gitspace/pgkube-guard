@@ -22,6 +22,10 @@
 
 pgkube-guard is a Helm chart. You describe your setup in a single `values.yaml`, it installs a few CronJobs, and Kubernetes takes it from there.
 
+<p align="center">
+  <img alt="pgkube-guard architecture: production Postgres backed up to S3 by pg_dump or wal-g, then verified in Kubernetes by an hourly freshness check and a weekly restore drill" src="docs/assets/architecture.png" width="100%">
+</p>
+
 It works with the backups you already have, or makes them for you:
 
 | Your backups come from | `verify.source` | `backup.enabled` |
