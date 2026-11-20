@@ -2,8 +2,8 @@ apiVersion: v2
 name: pgkube-guard
 description: Prove your PostgreSQL backups actually restore. Freshness checks and automated restore drills for pg_dump and wal-g, with RTO and RPO metrics
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.1
+appVersion: "0.2.1"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/elyas-gitspace/pgkube-guard
 sources:

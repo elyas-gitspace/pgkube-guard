@@ -3,6 +3,11 @@
 set -u
 ko() { echo "$1" >> /work/error.log; echo ko > /work/status; exit 0; }
 
+# L'image postgres officielle n'a pas les certificats racines : sans eux, wal-g ne peut pas vérifier le HTTPS de S3
+# On copie ceux de l'image curl dans /walg, et le container suivant les utilise via SSL_CERT_FILE
+cp /etc/ssl/certs/ca-certificates.crt /walg/ca-certificates.crt \
+  || ko "could not copy the CA certificates to /walg"
+
 # URL vide = l'utilisateur fournit une image qui contient déjà wal-g
 if [ -z "${WALG_BINARY_URL:-}" ]; then
   echo "verify.walg.binaryUrl is empty, using the wal-g shipped in the restore image"
